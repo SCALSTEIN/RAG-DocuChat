@@ -4,7 +4,6 @@ import tempfile
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
-# Import HuggingFace for local embeddings (No API limits!)
 from langchain_community.embeddings import HuggingFaceEmbeddings 
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
@@ -30,19 +29,14 @@ def save_uploaded_file(uploaded_file):
 
 @st.cache_resource
 def process_document(file_path):
-    # Notice: We don't need the API key here anymore!
-    
     loader = PyPDFLoader(file_path)
     docs = loader.load()
     
-    # Split text
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
     
-    # USE LOCAL EMBEDDINGS (HuggingFace)
-    # This runs on the CPU and does not hit Google's API limit
+    # LOCAL EMBEDDINGS (No Rate Limit)
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    
     vector_store = FAISS.from_documents(splits, embeddings)
     return vector_store
 
@@ -50,9 +44,11 @@ def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 def get_rag_chain(vector_store, api_key):
-    # We still use Google Gemini for the ACTUAL answering
     os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+    
+    # UPDATED MODEL NAME: "gemini-1.5-flash-latest" is more stable than "gemini-1.5-flash"
+    # If this still fails, try "gemini-pro"
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0)
     
     retriever = vector_store.as_retriever()
     
@@ -79,15 +75,11 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if uploaded_file and api_key: # Check for API key before processing
+if uploaded_file and api_key:
     try:
         with st.spinner("Processing document... (This runs locally)"):
             temp_path = save_uploaded_file(uploaded_file)
-            
-            # 1. Create Vector Store (Locally - No Rate Limit)
             vector_store = process_document(temp_path)
-            
-            # 2. Setup QA Chain (Uses Google API only for answering)
             rag_chain = get_rag_chain(vector_store, api_key)
 
         if prompt := st.chat_input("Ask a question..."):
@@ -108,4 +100,3 @@ elif uploaded_file and not api_key:
     st.warning("Please enter your Google API Key to chat.")
 else:
     st.info("Please provide a Google API Key and upload a PDF to start.")
-
