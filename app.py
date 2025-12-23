@@ -3,19 +3,21 @@ import os
 import tempfile
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA  # <--- The stable, universal import
+from langchain.chains import RetrievalQA
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="DocuChat RAG", page_icon="📄")
-st.title("📄 Chat with your PDF")
+st.set_page_config(page_title="DocuChat (Free Version)", page_icon="🤖")
+st.title("🤖 Chat with PDF (Free Gemini)")
 
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
     st.header("Settings")
-    api_key = st.text_input("OpenAI API Key", type="password")
+    # We need a Google API Key now
+    api_key = st.text_input("Google API Key", type="password")
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+    st.markdown("[Get a Free Google Key](https://aistudio.google.com/app/apikey)")
 
 # --- HELPER FUNCTIONS ---
 def save_uploaded_file(uploaded_file):
@@ -25,24 +27,29 @@ def save_uploaded_file(uploaded_file):
 
 @st.cache_resource
 def process_document(file_path, api_key):
-    os.environ["OPENAI_API_KEY"] = api_key
+    # Set the key for Google
+    os.environ["GOOGLE_API_KEY"] = api_key
+    
     loader = PyPDFLoader(file_path)
     docs = loader.load()
+    
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
-    embeddings = OpenAIEmbeddings()
+    
+    # USE GOOGLE EMBEDDINGS (Free)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_documents(splits, embeddings)
     return vector_store
 
 def get_qa_chain(vector_store):
-    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+    # USE GOOGLE GEMINI LLM (Free)
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
     
-    # Use RetrievalQA - works on ALL versions of LangChain
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
         retriever=vector_store.as_retriever(),
-        return_source_documents=True  # This allows us to see the sources
+        return_source_documents=True
     )
     return qa_chain
 
@@ -68,14 +75,12 @@ if api_key and uploaded_file:
 
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    # Invoke the chain
                     response = qa_chain.invoke({"query": prompt})
-                    
                     answer = response["result"]
                     source_docs = response["source_documents"]
 
                     st.markdown(answer)
-
+                    
                     with st.expander("Reference Source"):
                         for doc in source_docs:
                             page_num = doc.metadata.get('page', 0) + 1
@@ -87,5 +92,5 @@ if api_key and uploaded_file:
     except Exception as e:
         st.error(f"An error occurred: {e}")
 else:
-    st.info("Please provide an OpenAI API Key and upload a PDF to start.")
+    st.info("Please provide a Google API Key and upload a PDF to start.")
 
