@@ -9,7 +9,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableBranch
+from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import AIMessage, HumanMessage
 
 # --- PAGE CONFIGURATION ---
@@ -40,7 +40,6 @@ with st.sidebar:
             pass # Fail silently if key is bad
             
     if available_models:
-        # Default to a flash model if available
         default_index = 0
         for i, m in enumerate(available_models):
             if "flash" in m:
@@ -52,14 +51,12 @@ with st.sidebar:
 
     # 3. Data Management
     st.markdown("### 📂 Data Source")
-    # MULTIPLE FILES SUPPORT
     uploaded_files = st.file_uploader(
         "Upload PDF(s)", 
         type="pdf", 
         accept_multiple_files=True
     )
     
-    # PERSISTENCE CONTROLS
     if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
         st.rerun()
@@ -79,22 +76,16 @@ def get_llm(api_key, model_name):
 
 def get_embeddings(hf_token):
     os.environ['HF_TOKEN'] = hf_token
-    # Using a robust, free embedding model
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 @st.cache_resource
 def load_or_create_vector_store(files, _embeddings):
     """
-    Logic:
-    1. If new files are uploaded -> Process them, Create Index, SAVE to disk.
-    2. If no new files -> Try to LOAD from disk.
+    STRICT RULE: No st.toast or st.write inside this function because it is cached.
     """
-    
     # Case 1: Processing New Files
     if files:
-        st.toast("Processing new files...", icon="⏳")
         all_docs = []
-        
         for file in files:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(file.getvalue())
@@ -102,38 +93,32 @@ def load_or_create_vector_store(files, _embeddings):
             
             loader = PyPDFLoader(tmp_path)
             all_docs.extend(loader.load())
-            os.remove(tmp_path) # Cleanup temp file
+            os.remove(tmp_path)
             
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = text_splitter.split_documents(all_docs)
         
-        # Create and Save Index
         vector_store = FAISS.from_documents(splits, _embeddings)
         vector_store.save_local(INDEX_path)
-        st.toast("Index saved locally!", icon="💾")
-        return vector_store
+        return vector_store, "new" # Return tuple to signal what happened
     
     # Case 2: Load Existing Index
     elif os.path.exists(INDEX_path):
         try:
-            st.toast("Loading existing index...", icon="📂")
             vector_store = FAISS.load_local(
                 INDEX_path, 
                 _embeddings, 
-                allow_dangerous_deserialization=True # Trusted local source
+                allow_dangerous_deserialization=True
             )
-            return vector_store
+            return vector_store, "loaded"
         except Exception as e:
-            st.error(f"Failed to load index: {e}")
-            return None
+            return None, str(e)
             
-    return None
+    return None, None
 
 def get_conversational_chain(vector_store, llm):
     retriever = vector_store.as_retriever()
     
-    # 1. Contextualize Question Chain
-    # This prompts the LLM to rephrase the question if it depends on history
     contextualize_q_system_prompt = """Given a chat history and the latest user question 
     which might reference context in the chat history, formulate a standalone question 
     which can be understood without the chat history. Do NOT answer the question, 
@@ -149,7 +134,6 @@ def get_conversational_chain(vector_store, llm):
     
     runnable_filter = contextualize_q_prompt | llm | StrOutputParser()
     
-    # 2. Answer Chain
     qa_system_prompt = """You are an assistant for question-answering tasks. 
     Use the following pieces of retrieved context to answer the question. 
     If you don't know the answer, just say that you don't know. 
@@ -168,8 +152,6 @@ def get_conversational_chain(vector_store, llm):
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    # 3. The Full RAG Pipeline
-    # If chat history exists, we first rephrase the question, THEN retrieve
     rag_chain = (
         RunnablePassthrough.assign(
             context=lambda x: format_docs(retriever.get_relevant_documents(x["question"]))
@@ -179,13 +161,11 @@ def get_conversational_chain(vector_store, llm):
         | StrOutputParser()
     )
     
-    # We combine the rephraser and the Q&A
     final_chain = (
         RunnablePassthrough.assign(
             rephrased_question=runnable_filter
         ) 
         | RunnablePassthrough.assign(
-            # Pass the rephrased question to the RAG chain
             question=lambda x: x["rephrased_question"] 
         )
         | rag_chain
@@ -199,11 +179,17 @@ def get_conversational_chain(vector_store, llm):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display History
+# Display History (With Safe Type Checking)
 for message in st.session_state.messages:
-    role = "user" if isinstance(message, HumanMessage) else "assistant"
+    if isinstance(message, dict): # Handle legacy dict format
+        role = message.get("role", "user")
+        content = message.get("content", "")
+    else: # Handle new object format
+        role = "user" if isinstance(message, HumanMessage) else "assistant"
+        content = message.content
+
     with st.chat_message(role):
-        st.markdown(message.content)
+        st.markdown(content)
 
 # Main Execution
 if google_api_key and hf_token:
@@ -211,30 +197,33 @@ if google_api_key and hf_token:
         embeddings = get_embeddings(hf_token)
         llm = get_llm(google_api_key, selected_model)
         
-        # Load or Create Index
-        # We pass uploaded_files. If empty, it tries to load from disk.
-        vector_store = load_or_create_vector_store(uploaded_files, embeddings)
+        # Load Vector Store
+        # We now unpack the tuple: (store, status)
+        vector_store, status = load_or_create_vector_store(uploaded_files, embeddings)
         
+        # Handle UI notifications OUTSIDE the function
+        if status == "new":
+            st.toast("Index created and saved!", icon="💾")
+        elif status == "loaded":
+            # Optional: st.toast("Loaded existing index", icon="📂")
+            pass
+        elif status and "error" in status:
+            st.error(f"Error loading index: {status}")
+
         if vector_store:
             chain = get_conversational_chain(vector_store, llm)
             
-            # Chat Input
             if prompt := st.chat_input("Ask a question..."):
-                
-                # Update UI immediately
                 st.chat_message("user").markdown(prompt)
                 
-                # Process
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking..."):
-                        # Invoke chain with history
                         response = chain.invoke({
                             "question": prompt, 
                             "chat_history": st.session_state.messages
                         })
                         st.markdown(response)
                 
-                # Update History
                 st.session_state.messages.append(HumanMessage(content=prompt))
                 st.session_state.messages.append(AIMessage(content=response))
         else:
