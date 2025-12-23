@@ -6,8 +6,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat RAG", page_icon="📄")
@@ -22,20 +22,14 @@ with st.sidebar:
 # --- HELPER FUNCTIONS ---
 
 def save_uploaded_file(uploaded_file):
-    """
-    Save uploaded file to a temp directory so PyPDFLoader can read it.
-    """
+    """Save uploaded file to a temp directory."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
         return tmp_file.name
 
 @st.cache_resource
 def process_document(file_path, api_key):
-    """
-    Load, split, and embed the document. 
-    Cached so it only runs once per file.
-    """
-    # Set key for this function scope
+    """Load, split, and embed the document."""
     os.environ["OPENAI_API_KEY"] = api_key
     
     loader = PyPDFLoader(file_path)
@@ -51,62 +45,89 @@ def process_document(file_path, api_key):
     vector_store = FAISS.from_documents(splits, embeddings)
     return vector_store
 
-def get_response_chain(vector_store):
+def get_retrieval_chain(vector_store):
     """
-    Build the RAG chain.
+    Build the Chain that returns both the answer and the sources.
     """
-    retriever = vector_store.as_retriever()
-    
-    template = """Answer the question based only on the following context:
-    {context}
-
-    Question: {question}
-    """
-    prompt = ChatPromptTemplate.from_template(template)
     llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+    retriever = vector_store.as_retriever()
+
+    # 1. Define the "Answer" prompt
+    prompt = ChatPromptTemplate.from_template("""
+    Answer the user's question based ONLY on the following context. 
+    If you don't know the answer, just say that you don't know.
+
+    Context: {context}
+    Question: {input}
+    """)
+
+    # 2. Create the "Document Chain" (Generates the answer)
+    document_chain = create_stuff_documents_chain(llm, prompt)
+
+    # 3. Create the "Retrieval Chain" (Combines Retriever + Document Chain)
+    # This automatically passes retrieved docs into the 'context' variable
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
     
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    return chain
+    return retrieval_chain
 
 # --- MAIN APP LOGIC ---
 
-# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat messages from history on app rerun
+# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        # If there are sources in history, display them (optional simplification)
+        if "sources" in message:
+            with st.expander("View Sources"):
+                for source in message["sources"]:
+                    st.markdown(f"- **Page {source['page']}**: {source['content']}...")
 
-# Only proceed if API Key and File are present
 if api_key and uploaded_file:
     try:
-        # 1. Process File
         with st.spinner("Processing document..."):
             temp_path = save_uploaded_file(uploaded_file)
             vector_store = process_document(temp_path, api_key)
-            chain = get_response_chain(vector_store)
+            chain = get_retrieval_chain(vector_store)
 
-        # 2. Chat Input
-        if prompt := st.chat_input("Ask a question about your document..."):
-            # Add user message to chat history
+        if prompt := st.chat_input("Ask a question..."):
+            
+            # 1. Display User Message
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # Generate response
+            # 2. Generate and Display Response
             with st.chat_message("assistant"):
-                response = chain.invoke(prompt)
-                st.markdown(response)
-            
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
+                with st.spinner("Thinking..."):
+                    # 'input' is the key expected by create_retrieval_chain
+                    response = chain.invoke({"input": prompt})
+                    
+                    answer = response["answer"]
+                    source_docs = response["context"]
+
+                    st.markdown(answer)
+
+                    # 3. Format and Display Sources
+                    sources_data = []
+                    with st.expander("Reference Source"):
+                        for doc in source_docs:
+                            # Extract page number (PyPDFLoader uses 0-indexing, so +1)
+                            page_num = doc.metadata.get('page', 0) + 1
+                            # Preview text (first 100 chars)
+                            preview = doc.page_content[:100].replace('\n', ' ')
+                            
+                            st.markdown(f"- **Page {page_num}**: \"{preview}...\"")
+                            sources_data.append({"page": page_num, "content": preview})
+
+            # 4. Save Assistant Message with Sources to History
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": answer,
+                "sources": sources_data
+            })
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
