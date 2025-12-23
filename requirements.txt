@@ -1,8 +1,7 @@
 streamlit
-langchain>=0.1.0
-langchain-community>=0.0.10
-langchain-openai>=0.0.5
-langchain-core>=0.1.0
+langchain
+langchain-community
+langchain-openai
 faiss-cpu
 pypdf
 tiktoken
