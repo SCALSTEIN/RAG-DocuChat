@@ -6,3 +6,4 @@ faiss-cpu
 pypdf
 tiktoken
 python-dotenv
+sentence-transformers
