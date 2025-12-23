@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat Pro", page_icon="🧠", layout="wide")
-st.title("🧠 DocuChat Pro: Memory, Multi-File & Persistence")
+st.title("🧠 DocuChat Pro: Citations & Evidence")
 
 # --- GLOBAL CONSTANTS ---
 INDEX_path = "faiss_index"
@@ -37,7 +37,7 @@ with st.sidebar:
             models = genai.list_models()
             available_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
         except Exception:
-            pass # Fail silently if key is bad
+            pass 
             
     if available_models:
         default_index = 0
@@ -51,11 +51,7 @@ with st.sidebar:
 
     # 3. Data Management
     st.markdown("### 📂 Data Source")
-    uploaded_files = st.file_uploader(
-        "Upload PDF(s)", 
-        type="pdf", 
-        accept_multiple_files=True
-    )
+    uploaded_files = st.file_uploader("Upload PDF(s)", type="pdf", accept_multiple_files=True)
     
     if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
@@ -80,10 +76,6 @@ def get_embeddings(hf_token):
 
 @st.cache_resource
 def load_or_create_vector_store(files, _embeddings):
-    """
-    STRICT RULE: No st.toast or st.write inside this function because it is cached.
-    """
-    # Case 1: Processing New Files
     if files:
         all_docs = []
         for file in files:
@@ -100,16 +92,11 @@ def load_or_create_vector_store(files, _embeddings):
         
         vector_store = FAISS.from_documents(splits, _embeddings)
         vector_store.save_local(INDEX_path)
-        return vector_store, "new" # Return tuple to signal what happened
+        return vector_store, "new"
     
-    # Case 2: Load Existing Index
     elif os.path.exists(INDEX_path):
         try:
-            vector_store = FAISS.load_local(
-                INDEX_path, 
-                _embeddings, 
-                allow_dangerous_deserialization=True
-            )
+            vector_store = FAISS.load_local(INDEX_path, _embeddings, allow_dangerous_deserialization=True)
             return vector_store, "loaded"
         except Exception as e:
             return None, str(e)
@@ -154,87 +141,56 @@ def get_conversational_chain(vector_store, llm):
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    # 3. RAG Pipeline (FIXED HERE)
-    rag_chain = (
+    # 3. RAG Pipeline (UPDATED FOR SOURCES)
+    # This chain now returns a DICTIONARY with both 'answer' and 'source_documents'
+    rag_chain_with_source = (
         RunnablePassthrough.assign(
-            # We changed .get_relevant_documents() to .invoke()
-            context=lambda x: format_docs(retriever.invoke(x["question"]))
+            # Step A: Retrieve docs and keep them in 'source_documents'
+            source_documents=lambda x: retriever.invoke(x["question"])
+        ) 
+        | RunnablePassthrough.assign(
+            # Step B: Format the docs into a string for the LLM
+            context=lambda x: format_docs(x["source_documents"])
         )
-        | qa_prompt
-        | llm
-        | StrOutputParser()
+        | RunnablePassthrough.assign(
+            # Step C: Generate the answer
+            answer=qa_prompt | llm | StrOutputParser()
+        )
     )
     
     final_chain = (
-        RunnablePassthrough.assign(
-            rephrased_question=runnable_filter
-        ) 
-        | RunnablePassthrough.assign(
-            question=lambda x: x["rephrased_question"] 
-        )
-        | rag_chain
-    )
-    
-    return final_chain
-
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
-
-    rag_chain = (
-        RunnablePassthrough.assign(
-            context=lambda x: format_docs(retriever.get_relevant_documents(x["question"]))
-        )
-        | qa_prompt
-        | llm
-        | StrOutputParser()
-    )
-    
-    final_chain = (
-        RunnablePassthrough.assign(
-            rephrased_question=runnable_filter
-        ) 
-        | RunnablePassthrough.assign(
-            question=lambda x: x["rephrased_question"] 
-        )
-        | rag_chain
+        RunnablePassthrough.assign(rephrased_question=runnable_filter) 
+        | RunnablePassthrough.assign(question=lambda x: x["rephrased_question"])
+        | rag_chain_with_source
     )
     
     return final_chain
 
 # --- MAIN APP LOGIC ---
 
-# Initialize Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display History (With Safe Type Checking)
+# Display History
 for message in st.session_state.messages:
-    if isinstance(message, dict): # Handle legacy dict format
+    if isinstance(message, dict):
         role = message.get("role", "user")
         content = message.get("content", "")
-    else: # Handle new object format
+    else:
         role = "user" if isinstance(message, HumanMessage) else "assistant"
         content = message.content
-
     with st.chat_message(role):
         st.markdown(content)
 
-# Main Execution
 if google_api_key and hf_token:
     try:
         embeddings = get_embeddings(hf_token)
         llm = get_llm(google_api_key, selected_model)
         
-        # Load Vector Store
-        # We now unpack the tuple: (store, status)
         vector_store, status = load_or_create_vector_store(uploaded_files, embeddings)
         
-        # Handle UI notifications OUTSIDE the function
         if status == "new":
             st.toast("Index created and saved!", icon="💾")
-        elif status == "loaded":
-            # Optional: st.toast("Loaded existing index", icon="📂")
-            pass
         elif status and "error" in status:
             st.error(f"Error loading index: {status}")
 
@@ -246,14 +202,30 @@ if google_api_key and hf_token:
                 
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking..."):
-                        response = chain.invoke({
+                        # Get the Full Result (Answer + Sources)
+                        result = chain.invoke({
                             "question": prompt, 
                             "chat_history": st.session_state.messages
                         })
-                        st.markdown(response)
+                        
+                        answer_text = result["answer"]
+                        source_docs = result["source_documents"]
+                        
+                        # Display Answer
+                        st.markdown(answer_text)
+                        
+                        # Display Citations in an Expander
+                        with st.expander("📚 Reference Sources"):
+                            for i, doc in enumerate(source_docs):
+                                page_num = doc.metadata.get("page", "Unknown") + 1
+                                source_file = os.path.basename(doc.metadata.get("source", "Unknown file"))
+                                snippet = doc.page_content[:150].replace("\n", " ")
+                                st.markdown(f"**Source {i+1} (Page {page_num}):**")
+                                st.caption(f"\"{snippet}...\"")
                 
+                # Save only the answer text to history (not the whole object)
                 st.session_state.messages.append(HumanMessage(content=prompt))
-                st.session_state.messages.append(AIMessage(content=response))
+                st.session_state.messages.append(AIMessage(content=answer_text))
         else:
             if not uploaded_files:
                 st.info("👆 Please upload a PDF to create a new index, or ensure a saved index exists.")
