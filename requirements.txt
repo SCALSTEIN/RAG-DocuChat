@@ -8,3 +8,11 @@ uvicorn[standard]>=0.20.0
 python-dotenv>=1.0.0
 pydantic>=1.10.0
 sentence-transformers>=2.2.2  # optional: for local embeddings
+streamlit
+langchain
+langchain-community
+langchain-openai
+faiss-cpu
+pypdf
+tiktoken
+python-dotenv
