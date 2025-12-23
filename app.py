@@ -12,14 +12,22 @@ from langchain_core.runnables import RunnablePassthrough
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat (Free Version)", page_icon="🤖")
-st.title("🤖 Chat with PDF (Gemini 2.5)")
+st.title("🤖 Chat with PDF (Authenticated)")
 
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
     st.header("Settings")
-    api_key = st.text_input("Google API Key", type="password")
+    
+    st.markdown("### 1. API Keys")
+    google_api_key = st.text_input("Google API Key", type="password")
+    
+    st.markdown("### 2. Hugging Face Token")
+    st.caption("Required to bypass Streamlit rate limits.")
+    hf_token = st.text_input("HF Token", type="password")
+    st.markdown("[Get Free HF Token](https://huggingface.co/settings/tokens)")
+    
+    st.markdown("### 3. Upload")
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    st.markdown("[Get a Free Google Key](https://aistudio.google.com/app/apikey)")
 
 # --- HELPER FUNCTIONS ---
 def save_uploaded_file(uploaded_file):
@@ -28,27 +36,32 @@ def save_uploaded_file(uploaded_file):
         return tmp_file.name
 
 @st.cache_resource
-def process_document(file_path):
+def process_document(file_path, hf_token):
+    # Set HF Token to bypass rate limits
+    os.environ['HF_TOKEN'] = hf_token
+    
     loader = PyPDFLoader(file_path)
     docs = loader.load()
     
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
     
-    # LOCAL EMBEDDINGS (No Rate Limit)
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # LOCAL EMBEDDINGS (Authenticated)
+    # Using a different model alias that is often more reliable
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
     vector_store = FAISS.from_documents(splits, embeddings)
     return vector_store
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
-def get_rag_chain(vector_store, api_key):
-    os.environ["GOOGLE_API_KEY"] = api_key
+def get_rag_chain(vector_store, google_api_key):
+    os.environ["GOOGLE_API_KEY"] = google_api_key
     
-    # UPDATED MODEL: Using the current standard "gemini-2.5-flash"
-    # If this fails, try "gemini-2.0-flash" or just "gemini-pro"
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+    # Using 'gemini-1.5-flash' as it is the most standard current model.
+    # If 1.5 fails, try 'gemini-pro'
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
     
     retriever = vector_store.as_retriever()
     
@@ -75,12 +88,16 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if uploaded_file and api_key:
+# Only run if we have BOTH keys and the file
+if uploaded_file and google_api_key and hf_token:
     try:
-        with st.spinner("Processing document... (This runs locally)"):
+        with st.spinner("Processing document..."):
             temp_path = save_uploaded_file(uploaded_file)
-            vector_store = process_document(temp_path)
-            rag_chain = get_rag_chain(vector_store, api_key)
+            
+            # Pass the HF Token to the processor
+            vector_store = process_document(temp_path, hf_token)
+            
+            rag_chain = get_rag_chain(vector_store, google_api_key)
 
         if prompt := st.chat_input("Ask a question..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -96,7 +113,12 @@ if uploaded_file and api_key:
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
-elif uploaded_file and not api_key:
-    st.warning("Please enter your Google API Key to chat.")
+
+elif uploaded_file:
+    # Helper warnings if user forgets keys
+    if not google_api_key:
+        st.warning("⚠️ Please enter your Google API Key.")
+    if not hf_token:
+        st.warning("⚠️ Please enter your Hugging Face Token.")
 else:
-    st.info("Please provide a Google API Key and upload a PDF to start.")
+    st.info("Please provide API keys and upload a PDF to start.")
