@@ -1,0 +1,115 @@
+import streamlit as st
+import os
+import tempfile
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="DocuChat RAG", page_icon="📄")
+st.title("📄 Chat with your PDF")
+
+# --- SIDEBAR: CONFIGURATION ---
+with st.sidebar:
+    st.header("Settings")
+    api_key = st.text_input("OpenAI API Key", type="password")
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+
+# --- HELPER FUNCTIONS ---
+
+def save_uploaded_file(uploaded_file):
+    """
+    Save uploaded file to a temp directory so PyPDFLoader can read it.
+    """
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        return tmp_file.name
+
+@st.cache_resource
+def process_document(file_path, api_key):
+    """
+    Load, split, and embed the document. 
+    Cached so it only runs once per file.
+    """
+    # Set key for this function scope
+    os.environ["OPENAI_API_KEY"] = api_key
+    
+    loader = PyPDFLoader(file_path)
+    docs = loader.load()
+    
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+    splits = text_splitter.split_documents(docs)
+    
+    embeddings = OpenAIEmbeddings()
+    vector_store = FAISS.from_documents(splits, embeddings)
+    return vector_store
+
+def get_response_chain(vector_store):
+    """
+    Build the RAG chain.
+    """
+    retriever = vector_store.as_retriever()
+    
+    template = """Answer the question based only on the following context:
+    {context}
+
+    Question: {question}
+    """
+    prompt = ChatPromptTemplate.from_template(template)
+    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+    
+    chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    return chain
+
+# --- MAIN APP LOGIC ---
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat messages from history on app rerun
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Only proceed if API Key and File are present
+if api_key and uploaded_file:
+    try:
+        # 1. Process File
+        with st.spinner("Processing document..."):
+            temp_path = save_uploaded_file(uploaded_file)
+            vector_store = process_document(temp_path, api_key)
+            chain = get_response_chain(vector_store)
+
+        # 2. Chat Input
+        if prompt := st.chat_input("Ask a question about your document..."):
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            # Generate response
+            with st.chat_message("assistant"):
+                response = chain.invoke(prompt)
+                st.markdown(response)
+            
+            # Add assistant response to chat history
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+
+else:
+    st.info("Please provide an OpenAI API Key and upload a PDF to start.")
