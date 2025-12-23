@@ -5,7 +5,10 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
+# We use Core components instead of "chains" to avoid import errors
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat (Free Version)", page_icon="🤖")
@@ -14,7 +17,6 @@ st.title("🤖 Chat with PDF (Free Gemini)")
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
     st.header("Settings")
-    # We need a Google API Key now
     api_key = st.text_input("Google API Key", type="password")
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     st.markdown("[Get a Free Google Key](https://aistudio.google.com/app/apikey)")
@@ -27,7 +29,6 @@ def save_uploaded_file(uploaded_file):
 
 @st.cache_resource
 def process_document(file_path, api_key):
-    # Set the key for Google
     os.environ["GOOGLE_API_KEY"] = api_key
     
     loader = PyPDFLoader(file_path)
@@ -36,22 +37,32 @@ def process_document(file_path, api_key):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
     
-    # USE GOOGLE EMBEDDINGS (Free)
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_documents(splits, embeddings)
     return vector_store
 
-def get_qa_chain(vector_store):
-    # USE GOOGLE GEMINI LLM (Free)
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+def get_rag_chain(vector_store):
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+    retriever = vector_store.as_retriever()
     
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vector_store.as_retriever(),
-        return_source_documents=True
+    template = """Answer the question based only on the following context:
+    {context}
+
+    Question: {question}
+    """
+    prompt = ChatPromptTemplate.from_template(template)
+    
+    # Build chain using LCEL (No "langchain.chains" import needed!)
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
     )
-    return qa_chain
+    return rag_chain
 
 # --- MAIN APP LOGIC ---
 if "messages" not in st.session_state:
@@ -66,7 +77,7 @@ if api_key and uploaded_file:
         with st.spinner("Processing document..."):
             temp_path = save_uploaded_file(uploaded_file)
             vector_store = process_document(temp_path, api_key)
-            qa_chain = get_qa_chain(vector_store)
+            rag_chain = get_rag_chain(vector_store)
 
         if prompt := st.chat_input("Ask a question..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -75,22 +86,13 @@ if api_key and uploaded_file:
 
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    response = qa_chain.invoke({"query": prompt})
-                    answer = response["result"]
-                    source_docs = response["source_documents"]
+                    # Invoke the chain
+                    response = rag_chain.invoke(prompt)
+                    st.markdown(response)
 
-                    st.markdown(answer)
-                    
-                    with st.expander("Reference Source"):
-                        for doc in source_docs:
-                            page_num = doc.metadata.get('page', 0) + 1
-                            preview = doc.page_content[:100].replace('\n', ' ')
-                            st.markdown(f"- **Page {page_num}**: \"{preview}...\"")
-
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
 else:
     st.info("Please provide a Google API Key and upload a PDF to start.")
-
