@@ -12,7 +12,7 @@ from langchain_core.runnables import RunnablePassthrough
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat (Free Version)", page_icon="🤖")
-st.title("🤖 Chat with PDF (No Rate Limits)")
+st.title("🤖 Chat with PDF (Gemini 2.5)")
 
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
@@ -46,9 +46,9 @@ def format_docs(docs):
 def get_rag_chain(vector_store, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # UPDATED MODEL NAME: "gemini-1.5-flash-latest" is more stable than "gemini-1.5-flash"
-    # If this still fails, try "gemini-pro"
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0)
+    # UPDATED MODEL: Using the current standard "gemini-2.5-flash"
+    # If this fails, try "gemini-2.0-flash" or just "gemini-pro"
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
     
     retriever = vector_store.as_retriever()
     
