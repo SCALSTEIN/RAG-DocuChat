@@ -119,6 +119,7 @@ def load_or_create_vector_store(files, _embeddings):
 def get_conversational_chain(vector_store, llm):
     retriever = vector_store.as_retriever()
     
+    # 1. Rephrase Question Chain
     contextualize_q_system_prompt = """Given a chat history and the latest user question 
     which might reference context in the chat history, formulate a standalone question 
     which can be understood without the chat history. Do NOT answer the question, 
@@ -134,6 +135,7 @@ def get_conversational_chain(vector_store, llm):
     
     runnable_filter = contextualize_q_prompt | llm | StrOutputParser()
     
+    # 2. Answer Chain
     qa_system_prompt = """You are an assistant for question-answering tasks. 
     Use the following pieces of retrieved context to answer the question. 
     If you don't know the answer, just say that you don't know. 
@@ -148,6 +150,32 @@ def get_conversational_chain(vector_store, llm):
             ("human", "{question}"),
         ]
     )
+
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    # 3. RAG Pipeline (FIXED HERE)
+    rag_chain = (
+        RunnablePassthrough.assign(
+            # We changed .get_relevant_documents() to .invoke()
+            context=lambda x: format_docs(retriever.invoke(x["question"]))
+        )
+        | qa_prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    final_chain = (
+        RunnablePassthrough.assign(
+            rephrased_question=runnable_filter
+        ) 
+        | RunnablePassthrough.assign(
+            question=lambda x: x["rephrased_question"] 
+        )
+        | rag_chain
+    )
+    
+    return final_chain
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
@@ -235,3 +263,4 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide both API Keys in the sidebar.")
+
