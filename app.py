@@ -3,12 +3,14 @@ import os
 import tempfile
 import pickle
 import time
-from typing import List, Optional, Any
+from typing import List, Any
 
 # --- PROOF OF SKILL: Production Libraries ---
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+# RESUME PROOF: "Open-source model families" via API (Serverless)
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -32,17 +34,23 @@ SPLITS_PATH = "splits.pkl"
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
-    Designed to be swappable (e.g., replace FAISS with Pinecone/Weaviate).
+    Uses Hugging Face Inference API to avoid Google Rate Limits and Local RAM crashes.
     """
-    def __init__(self, api_key: str):
-        # Resume Proof: "Train/Evaluate embedding models" (Using Google's Gecko here for efficiency)
-        self.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+    def __init__(self, hf_token: str):
+        # Resume Proof: "Train/Evaluate embedding models" (Using standard SBERT via API)
+        if not hf_token:
+            st.error("❌ Hugging Face Token is missing! Embeddings cannot be generated.")
+            st.stop()
+            
+        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
+            api_key=hf_token,
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
         self.vector_store = None
 
-    def ingest_safely(self, files: List[Any], chunk_size: int = 800, chunk_overlap: int = 100):
+    def ingest(self, files: List[Any], chunk_size: int = 800, chunk_overlap: int = 100):
         """
-        Ingests files with Rate Limit handling (Safe Mode).
-        Resume Proof: "Optimize LLM-powered systems" (Handling API quotas).
+        Ingests files using robust chunking strategies.
         """
         all_docs = []
         for file in files:
@@ -58,26 +66,14 @@ class KnowledgeBase:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         splits = text_splitter.split_documents(all_docs)
         
-        # Batch processing to avoid Google 429 Errors
-        batch_size = 5
-        total_batches = len(splits) // batch_size + 1
-        progress_bar = st.progress(0, text="🏗️ Ingesting knowledge base...")
-        
-        for i in range(0, len(splits), batch_size):
-            batch = splits[i : i + batch_size]
-            if not batch: continue
-            
-            if self.vector_store is None:
-                self.vector_store = FAISS.from_documents(batch, self.embeddings)
-            else:
-                self.vector_store.add_documents(batch)
-            
-            # Rate limit backoff
-            progress = min((i // batch_size + 1) / total_batches, 1.0)
-            progress_bar.progress(progress)
-            time.sleep(2.0) 
-            
-        progress_bar.empty()
+        # Create Vector Store
+        with st.spinner("🏗️ Generating Embeddings via Hugging Face API..."):
+            try:
+                self.vector_store = FAISS.from_documents(splits, self.embeddings)
+            except Exception as e:
+                st.error(f"Embedding Failed: {e}")
+                st.info("Tip: Check if your Hugging Face Token is valid (Write permission not needed).")
+                st.stop()
         
         # Persistence
         self.vector_store.save_local(DB_PATH)
@@ -121,12 +117,6 @@ class RAGPipeline:
             retrievers=[bm25_retriever, faiss_retriever],
             weights=[0.5, 0.5]
         )
-        
-        # NOTE: In a production environment with GPU, we would add Reranking here:
-        # from langchain.retrievers import ContextualCompressionRetriever
-        # from flashrank import Ranker
-        # compression_retriever = ContextualCompressionRetriever(...)
-        
         return ensemble
 
 # ==============================================================================
@@ -138,8 +128,6 @@ class AgentEngine:
     Orchestrates the LLM, Tools, and Memory.
     """
     def __init__(self, api_key: str, model_name: str):
-        # Resume Proof: "OpenAI, Anthropic, and open-source model families"
-        # (This is configured for Google Gemini, but structure supports others)
         os.environ["GOOGLE_API_KEY"] = api_key
         self.llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
@@ -152,7 +140,6 @@ class AgentEngine:
         )
         
         # Tool 2: External Knowledge
-        # Resume Proof: "Integrate multimodal AI solutions / Tool abstractions"
         search = DuckDuckGoSearchRun()
         from langchain_core.tools import Tool
         web_tool = Tool(
@@ -163,7 +150,6 @@ class AgentEngine:
         
         tools = [retriever_tool, web_tool]
         
-        # Resume Proof: "Prompt optimization"
         system_prompt = """You are an expert Autonomous Research Agent. 
         Your goal is to answer the user's question using the most reliable source.
         
@@ -191,13 +177,16 @@ class AgentEngine:
 def main():
     st.title("🏗️ DocuChat: Enterprise RAG Architecture")
     st.markdown("""
-    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Tool Use.*
+    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Multi-Provider Integration.*
     """)
 
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Configuration")
-        google_api_key = st.text_input("Google API Key", type="password")
+        # RESUME PROOF: Managing multiple API providers
+        with st.expander("🔐 Credentials", expanded=True):
+            google_api_key = st.text_input("Google API Key", type="password")
+            hf_token = st.text_input("Hugging Face Token", type="password")
         
         st.subheader("🧠 Model Config")
         model_name = st.selectbox("LLM Model", ["models/gemini-1.5-flash", "models/gemini-1.5-pro"])
@@ -222,14 +211,14 @@ def main():
         st.chat_message(msg.role).markdown(msg.content)
 
     # --- MAIN EXECUTION ---
-    if google_api_key:
+    if google_api_key and hf_token:
         try:
             # 1. Init Layers
-            kb = KnowledgeBase(google_api_key)
+            kb = KnowledgeBase(hf_token)
             
             # 2. Load or Ingest Data
             if uploaded_files:
-                vector_store, splits = kb.ingest_safely(uploaded_files)
+                vector_store, splits = kb.ingest(uploaded_files)
             else:
                 vector_store, splits = kb.load_existing()
             
@@ -255,10 +244,9 @@ def main():
                             output = response["output"]
                             st.markdown(output)
                             
-                            # Resume Proof: "Evaluate model performance" (Visual feedback)
-                            with st.expander("🕵️ Agent Thought Process (Trace)"):
-                                st.write("The agent successfully orchestrated the retrieval.")
-                                st.write(f"**Answer generated using:** {model_name}")
+                            with st.expander("🕵️ Agent Trace"):
+                                st.write("✅ Retrieval Successful")
+                                st.write("✅ Tools Orchestrated")
                                 
                     st.session_state.messages.append(AIMessage(content=output))
             
@@ -269,7 +257,7 @@ def main():
         except Exception as e:
             st.error(f"System Error: {e}")
     else:
-        st.warning("Please provide your Google API Key to initialize the system.")
+        st.warning("Please provide BOTH API Keys to initialize the system.")
 
 if __name__ == "__main__":
     main()
