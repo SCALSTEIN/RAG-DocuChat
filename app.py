@@ -4,7 +4,7 @@ import tempfile
 import pickle
 import google.generativeai as genai
 
-# Core LangChain
+# Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -13,16 +13,17 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
 
-# AGENT IMPORTS (Fixed)
+# Agent Imports
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools.retriever import create_retriever_tool
 
-# Level 1 & 2: Hybrid Search & Reranking
+# Retrieval & Reranking Imports (FIXED)
 from langchain.retrievers import EnsembleRetriever, ContextualCompressionRetriever
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+# --- THE FIX IS HERE ---
+from langchain_community.document_compressors import FlashrankRerank
 
-# Level 3: Tools
+# Tools
 from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- PAGE CONFIGURATION ---
@@ -31,7 +32,7 @@ st.title("🕵️ DocuChat Agent: Hybrid, Reranked & Autonomous")
 
 # --- GLOBAL CONSTANTS ---
 DB_PATH = "vector_db"
-SPLITS_PATH = "splits.pkl" # We need to save raw text for BM25
+SPLITS_PATH = "splits.pkl"
 
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
@@ -84,7 +85,6 @@ with st.sidebar:
 
 def get_llm(api_key, model_name):
     os.environ["GOOGLE_API_KEY"] = api_key
-    # Agent requires tool binding, low temp for precision
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
 def get_embeddings(hf_token):
@@ -93,12 +93,6 @@ def get_embeddings(hf_token):
 
 @st.cache_resource
 def process_documents(files, _embeddings):
-    """
-    1. Reads PDF
-    2. Splits Text
-    3. Creates FAISS (Vector) Index
-    4. Saves FAISS + Raw Splits (for BM25)
-    """
     if not files and not os.path.exists(DB_PATH):
         return None, None
 
@@ -117,11 +111,9 @@ def process_documents(files, _embeddings):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = text_splitter.split_documents(all_docs)
         
-        # Save FAISS
         vector_store = FAISS.from_documents(splits, _embeddings)
         vector_store.save_local(DB_PATH)
         
-        # Save Splits (Required for BM25 reconstruction)
         with open(SPLITS_PATH, "wb") as f:
             pickle.dump(splits, f)
             
@@ -144,7 +136,7 @@ def build_advanced_retriever(vector_store, splits):
     # 1. Semantic Search (FAISS)
     faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     
-    # 2. Keyword Search (BM25) - Level 2
+    # 2. Keyword Search (BM25)
     bm25_retriever = BM25Retriever.from_documents(splits)
     bm25_retriever.k = 5
     
@@ -154,8 +146,7 @@ def build_advanced_retriever(vector_store, splits):
         weights=[0.5, 0.5]
     )
     
-    # 4. Reranking (Flashrank) - Level 1
-    # Compresses top 10 results down to top 4 most relevant
+    # 4. Reranking (Flashrank)
     compressor = FlashrankRerank()
     compression_retriever = ContextualCompressionRetriever(
         base_compressor=compressor, 
@@ -203,7 +194,6 @@ def create_agent(llm, retriever):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display History
 for message in st.session_state.messages:
     if isinstance(message, dict):
         role = message.get("role", "user")
@@ -219,24 +209,17 @@ if google_api_key and hf_token:
         embeddings = get_embeddings(hf_token)
         llm = get_llm(google_api_key, selected_model)
         
-        # 1. Load Data
         vector_store, splits = process_documents(uploaded_files, embeddings)
         
-        # 2. Build Tools (Only if data exists)
         if vector_store and splits:
-            # Build the "Super Retriever"
             retriever = build_advanced_retriever(vector_store, splits)
-            
-            # Create Agent
             agent_executor = create_agent(llm, retriever)
             
-            # User Input
             if prompt := st.chat_input("Ask about the PDF or the Web..."):
                 st.chat_message("user").markdown(prompt)
                 
                 with st.chat_message("assistant"):
                     with st.spinner("Agent is working... (Searching PDF & Web)"):
-                        # Agent Execution
                         response = agent_executor.invoke({
                             "input": prompt,
                             "chat_history": st.session_state.messages
@@ -244,16 +227,13 @@ if google_api_key and hf_token:
                         output_text = response["output"]
                         st.markdown(output_text)
                         
-                # Save History
                 st.session_state.messages.append(HumanMessage(content=prompt))
                 st.session_state.messages.append(AIMessage(content=output_text))
 
         else:
-            # Fallback if no PDF: Agent with ONLY Web Search
+            # Web-Only Fallback
             if not uploaded_files:
                 st.info("ℹ️ No PDF uploaded. Switching to Web-Only mode.")
-                
-                # Simple Web Agent
                 search = DuckDuckGoSearchRun()
                 from langchain_core.tools import Tool
                 web_tool = Tool(
@@ -283,6 +263,7 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide API Keys to initialize the Agent.")
+
 
 
 
