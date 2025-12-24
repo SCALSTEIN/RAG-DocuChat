@@ -11,3 +11,4 @@ python-dotenv
 duckduckgo-search
 rank_bm25
 google-generativeai
+huggingface-hub
