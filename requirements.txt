@@ -8,8 +8,9 @@ faiss-cpu
 pypdf
 tiktoken
 python-dotenv
-sentence-transformers==2.2.2   <-- Pinning this often fixes the meta error
+sentence-transformers
 huggingface-hub
 google-generativeai
 rank_bm25
+flashrank
 duckduckgo-search
