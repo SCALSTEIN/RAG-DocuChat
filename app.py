@@ -1,3 +1,35 @@
+import streamlit as st
+import os
+import tempfile
+import pickle
+import time
+from typing import List, Any, Optional
+
+# --- CRITICAL: This MUST be the first Streamlit command ---
+st.set_page_config(page_title="DocuChat Agent: Enterprise", page_icon="🏗️", layout="wide")
+
+# --- PROOF OF SKILL: Production Libraries ---
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.tools.retriever import create_retriever_tool
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_community.tools import DuckDuckGoSearchRun
+
+# --- GLOBAL CONFIG ---
+DB_PATH = "vector_db"
+SPLITS_PATH = "splits.pkl"
+
+# ==============================================================================
+# 🏗️ ARCHITECTURE LAYER: Knowledge Base
+# Resume Proof: "Develop and maintain vector database infrastructures"
+# ==============================================================================
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
@@ -79,3 +111,6 @@ class KnowledgeBase:
                 pickle.dump(splits, f)
             
         return self.vector_store, splits
+
+    def load_existing(self):
+        if os.path.exists(DB_PATH)
