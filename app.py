@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools.retriever import create_retriever_tool
 
-# Retrieval Imports (Stable Configuration: Hybrid Only)
+# Retrieval Imports
 from langchain.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 
@@ -41,26 +41,15 @@ with st.sidebar:
         google_api_key = st.text_input("Google API Key", type="password")
         hf_token = st.text_input("Hugging Face Token", type="password")
     
-    # 2. Dynamic Model Selector
+    # 2. Model Selector (FIXED: Hardcoded to prevent errors)
     st.markdown("### 🤖 Agent Brain")
-    available_models = []
-    if google_api_key:
-        try:
-            genai.configure(api_key=google_api_key)
-            models = genai.list_models()
-            available_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
-        except Exception:
-            pass 
-            
-    if available_models:
-        default_index = 0
-        for i, m in enumerate(available_models):
-            if "flash" in m:
-                default_index = i
-                break
-        selected_model = st.selectbox("Select Model:", available_models, index=default_index)
-    else:
-        selected_model = st.text_input("Model Name:", "models/gemini-1.5-flash")
+    # We manually list the supported models to avoid SDK crashes
+    valid_models = [
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-1.0-pro"
+    ]
+    selected_model = st.selectbox("Select Model:", valid_models, index=0)
 
     # 3. Data Management
     st.markdown("### 📂 Knowledge Base")
@@ -87,15 +76,15 @@ def get_llm(api_key, model_name):
 
 def get_embeddings(hf_token):
     os.environ['HF_TOKEN'] = hf_token
-    # FORCE CPU: This prevents the "meta tensor" error
+    # FORCE CPU to prevent "meta tensor" errors
     model_kwargs = {'device': 'cpu'}
     encode_kwargs = {'normalize_embeddings': True}
-    
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs=model_kwargs,
         encode_kwargs=encode_kwargs
     )
+
 @st.cache_resource
 def process_documents(files, _embeddings):
     if not files and not os.path.exists(DB_PATH):
@@ -146,7 +135,6 @@ def build_advanced_retriever(vector_store, splits):
     bm25_retriever.k = 4
     
     # 3. Hybrid Ensemble (50% Semantic / 50% Keyword)
-    # This combines the "Best of both worlds" without needing the problematic Flashrank
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
@@ -262,7 +250,3 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide API Keys to initialize the Agent.")
-
-
-
-
