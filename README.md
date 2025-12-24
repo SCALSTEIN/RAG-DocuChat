@@ -1,46 +1,103 @@
-# RAG-DocuChat
-This repository demonstrates a Retrieval-Augmented Generation (RAG) Q&A system using Python and LangChain. The system lets users query document datasets naturally — documents are ingested, chunked, embedded into a vector DB (Chroma), and queried with an LLM (OpenAI by default).
+# 🕵️ DocuChat Agent: Autonomous RAG & Research Assistant
 
-Features
-- Ingest files (PDF, TXT, MD, CSV) or directories
-- Chunking + metadata preservation
-- Chroma vector store (persisted)
-- Query endpoint (FastAPI) and CLI example
-- Supports OpenAI embeddings & chat model by default, with options for HuggingFace-based embeddings/LLMs
+**DocuChat Agent** is a production-grade AI research tool built with **Streamlit** and **LangChain**. It transforms static PDF documents into an interactive knowledge base using advanced retrieval techniques and agentic workflows.
 
-- Quickstart
-1. Create virtual environment and install
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+Unlike standard RAG apps, this agent uses **Hybrid Search (BM25 + FAISS)** and **Reranking (Flashrank)** to ensure maximum accuracy, and it can autonomously decide whether to answer from your documents or search the live web.
 
-2. Set environment variables (see `.env.example`):
-   - OPENAI_API_KEY (required for the default path)
-   Optionally set:
-   - PERSIST_DIRECTORY (where Chroma is persisted), default: `./chroma_db`
+---
 
-3. Ingest documents (example)
-   python -m app.ingest --docs ./sample_docs --persist_dir ./chroma_db
+## 🚀 Key Features
 
-4. Run the API
-   uvicorn app.server:app --reload --port 8000
+### 🧠 **Advanced Retrieval Engine**
+* **Hybrid Search:** Combines **Semantic Search** (FAISS) with **Keyword Search** (BM25) to capture both conceptual meaning and exact phrasing.
+* **Reranking:** Uses **Flashrank** (a lightweight Cross-Encoder) to re-score the top retrieval results, significantly reducing hallucinations and improving relevance.
+* **Local Embeddings:** Uses HuggingFace's `all-MiniLM-L6-v2` locally on the CPU to avoid API rate limits and costs.
 
-5. Query
-   - HTTP POST /query with JSON { "question": "Your question" }
-   - CLI: python -m app.query --question "What is X?"
+### 🤖 **Agentic Workflow**
+* **Autonomous Decision Making:** The AI isn't just a chatbot; it's an **Agent**. It analyzes your question and decides:
+    * *"Should I search the PDF?"* (for specific document queries)
+    * *"Should I search the Web?"* (for current events, facts, or comparisons)
+    * *"Should I use both?"*
+* **Web Search Integration:** Powered by **DuckDuckGo** for privacy-focused, real-time internet access.
 
-Notes and tips
-- You can switch embeddings to HuggingFace / sentence-transformers in `rag/ingest.py` by passing `embedding_backend="hf"`.
-- For multi-turn chat, use the `conversational=True` option in query functions to use LangChain's conversational retrieval chain.
-- Tune chunk_size and chunk_overlap for your dataset (smaller chunks for dense content, larger for context-heavy docs).
-- This example uses Chroma for persistence and OpenAI for embeddings and LLM generation. For production consider vector DB options like Pinecone, Weaviate, Milvus, or managed Chroma, and proper secrets & rate-limiting.
+### 🛠️ **Production-Ready Features**
+* **Dynamic Model Selector:** Automatically fetches valid Google Gemini models (e.g., `gemini-1.5-flash`, `gemini-2.0`) available to your specific API key.
+* **Persistence:** Automatically saves the Vector Database and text splits to disk. You can close the tab and return later without re-processing your files.
+* **Multi-File Support:** Upload and ingest multiple PDFs simultaneously.
 
-Security & Costs
-- Be mindful of API usage and cost when using hosted LLMs.
-- Protect API keys (do not commit .env with secret keys).
+---
 
-Next steps (ideas)
-- Add document ingestion metadata (source, page numbers) and surface citations in answers
-- Add re-ranking or hybrid retrieval (BM25 + embedding)
-- Add streaming responses and conversation memory
-- Add authentication to the API, usage quotas, and monitoring
+## 🏗️ Architecture
+
+1.  **Ingestion:** PDFs are loaded via `PyPDFLoader`, split into chunks, and embedded using `HuggingFaceEmbeddings`.
+2.  **Indexing:**
+    * **Vector Index:** Created using FAISS.
+    * **Keyword Index:** Created using BM25.
+3.  **Retrieval:** An `EnsembleRetriever` fetches results from both indices (50/50 weight).
+4.  **Refinement:** A `ContextualCompressionRetriever` (Flashrank) reranks the top 10 results to find the top 5 true matches.
+5.  **Generation:** A LangChain `ToolCallingAgent` orchestrates the retrieval tools and generates the final answer using **Google Gemini**.
+
+---
+
+## 📦 Installation
+
+### Prerequisites
+* Python 3.10+
+* **Google API Key** (Get it [here](https://aistudio.google.com/app/apikey))
+* **HuggingFace Access Token** (Get it [here](https://huggingface.co/settings/tokens))
+
+### Setup
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/yourusername/rag-docuchat.git](https://github.com/yourusername/rag-docuchat.git)
+    cd rag-docuchat
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  **Run the application:**
+    ```bash
+    streamlit run app.py
+    ```
+
+---
+
+## 🖥️ Usage
+
+1.  **Configure API Keys:**
+    * Open the sidebar.
+    * Enter your **Google API Key** (for the Brain).
+    * Enter your **HuggingFace Token** (for the Embeddings).
+2.  **Select Model:**
+    * Wait for the "Model" dropdown to populate. Select a model like `models/gemini-1.5-flash`.
+3.  **Upload Data:**
+    * Upload one or more PDF documents.
+    * Wait for the "Agent is working..." spinner to finish processing.
+4.  **Chat:**
+    * **Ask about the PDF:** "What are the key financial figures on page 3?"
+    * **Ask about the Web:** "What is the current stock price of Apple?"
+    * **Ask Complex Questions:** "Compare the budget in this PDF to the 2024 US Federal Budget."
+
+---
+
+## 📁 Project Structure
+
+* `app.py`: Main Streamlit application containing the UI, Agent logic, and RAG pipeline.
+* `requirements.txt`: List of Python dependencies.
+* `vector_db/`: (Generated) Folder storing the persistent FAISS index.
+* `splits.pkl`: (Generated) File storing raw text chunks for BM25 reconstruction.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+
+## 📄 License
+
+This project is open-source and available under the [MIT License](LICENSE).
