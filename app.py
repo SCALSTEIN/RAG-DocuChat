@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import tempfile
@@ -34,7 +33,7 @@ SPLITS_PATH = "splits.pkl"
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
-    Uses Hugging Face Inference API with Batching and Retry Logic for resilience.
+    Uses Hugging Face Inference API with Warmup, Micro-Batching and Retry Logic.
     """
     def __init__(self, hf_token: str):
         if not hf_token:
@@ -47,10 +46,30 @@ class KnowledgeBase:
         )
         self.vector_store = None
 
+    def _warmup_model(self):
+        """
+        Sends a tiny request to wake up the cold model on HF servers.
+        Resume Proof: "Ensure reliability in production"
+        """
+        with st.status("🌡️ Warming up Inference API...", expanded=True) as status:
+            for i in range(3):
+                try:
+                    self.embeddings.embed_query("ping")
+                    status.update(label="✅ API Ready!", state="complete", expanded=False)
+                    return True
+                except Exception as e:
+                    status.write(f"Attempt {i+1}/3: Model is cold/sleeping. Retrying in 5s...")
+                    time.sleep(5)
+            st.error("❌ Could not wake up Hugging Face API. The service might be down.")
+            st.stop()
+
     def ingest(self, files: List[Any], chunk_size: int = 800, chunk_overlap: int = 100):
         """
-        Ingests files using robust chunking strategies, batching, and retry logic.
+        Ingests files using robust chunking strategies, micro-batching, and retry logic.
         """
+        # 1. Warmup the API first
+        self._warmup_model()
+        
         all_docs = []
         for file in files:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -65,12 +84,12 @@ class KnowledgeBase:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         splits = text_splitter.split_documents(all_docs)
         
-        # --- OPTIMIZATION LAYER: Batch Processing ---
-        # Resume Proof: "Develop and maintain vector database infrastructures for large-scale embedding"
-        batch_size = 32  # Small batch size to prevent API Timeouts
+        # --- OPTIMIZATION LAYER: Micro-Batching ---
+        # Resume Proof: "Develop and maintain vector database infrastructures"
+        batch_size = 5  # Micro-batches to prevent Timeouts (Error 0)
         total_batches = len(splits) // batch_size + 1
         
-        progress_bar = st.progress(0, text="🏗️ Initializing ingestion...")
+        progress_bar = st.progress(0, text="🏗️ Starting Ingestion...")
         
         for i in range(0, len(splits), batch_size):
             batch = splits[i : i + batch_size]
@@ -90,18 +109,18 @@ class KnowledgeBase:
                     break
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        time.sleep(2) # Short wait for API to cool down
+                        time.sleep(3) # Wait longer between retries
                     else:
                         st.error(f"Failed to embed batch {i//batch_size + 1}: {e}")
             
             if not success:
-                st.error("❌ Critical Failure: Could not embed document even with retries.")
+                st.error("❌ Critical Failure: API Timed out.")
                 st.stop()
             
             # Update Progress
             current_progress = min((i // batch_size + 1) / total_batches, 1.0)
             progress_bar.progress(current_progress, text=f"Embedding batch {i//batch_size + 1}/{total_batches}...")
-            time.sleep(0.5) # Politeness delay
+            time.sleep(0.2) 
             
         progress_bar.empty()
         
