@@ -1,9 +1,9 @@
 streamlit
-langchain-community
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-core>=0.2.0
 langchain-google-genai
 langchain-text-splitters
-langchain-core
-langchain
 faiss-cpu
 pypdf
 tiktoken
@@ -11,6 +11,6 @@ python-dotenv
 sentence-transformers
 huggingface-hub
 google-generativeai
-rank_bm25             # For Hybrid Search (Keywords)
-flashrank             # For Reranking (Lightweight Cross-Encoder)
-duckduckgo-search     # For Web Search Tool
+rank_bm25
+flashrank
+duckduckgo-search
