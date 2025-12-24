@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import tempfile
@@ -8,7 +7,9 @@ import google.generativeai as genai
 # Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings # CHANGED
+from langchain_google_genai import ChatGoogleGenerativeAI
+# CHANGED: Using FastEmbed (Lightweight, Local, Free)
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings 
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,7 +27,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat Agent", page_icon="🕵️", layout="wide")
-st.title("🕵️ DocuChat Agent: Hybrid & Autonomous (Fast)")
+st.title("🕵️ DocuChat Agent: Fast, Free & Autonomous")
 
 # --- GLOBAL CONSTANTS ---
 DB_PATH = "vector_db"
@@ -39,7 +40,6 @@ with st.sidebar:
     # 1. API Keys
     with st.expander("🔐 API Keys", expanded=True):
         google_api_key = st.text_input("Google API Key", type="password")
-        # We NO LONGER need the Hugging Face Token!
     
     # 2. Model Selector
     st.markdown("### 🤖 Agent Brain")
@@ -73,15 +73,18 @@ def get_llm(api_key, model_name):
     os.environ["GOOGLE_API_KEY"] = api_key
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
-def get_embeddings(api_key):
-    # CHANGED: Using Google's Embedding Model (Fast & Free)
-    os.environ["GOOGLE_API_KEY"] = api_key
-    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+def get_embeddings():
+    # FAST & FREE LOCAL EMBEDDINGS
+    # No rate limits, no PyTorch dependency
+    return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 @st.cache_resource
-def process_documents(files, _embeddings):
+def process_documents(files):
     if not files and not os.path.exists(DB_PATH):
         return None, None
+
+    # We initialize embeddings here since they don't need a key anymore
+    _embeddings = get_embeddings()
 
     # A. Process New Files
     if files:
@@ -186,11 +189,10 @@ for message in st.session_state.messages:
 
 if google_api_key:
     try:
-        # CHANGED: Now using Google API for embeddings too
-        embeddings = get_embeddings(google_api_key)
         llm = get_llm(google_api_key, selected_model)
         
-        vector_store, splits = process_documents(uploaded_files, embeddings)
+        # Embeddings are initialized inside here now
+        vector_store, splits = process_documents(uploaded_files)
         
         if vector_store and splits:
             retriever = build_advanced_retriever(vector_store, splits)
@@ -200,7 +202,7 @@ if google_api_key:
                 st.chat_message("user").markdown(prompt)
                 
                 with st.chat_message("assistant"):
-                    with st.spinner("Agent is working... (Searching PDF & Web)"):
+                    with st.spinner("Agent is working..."):
                         response = agent_executor.invoke({
                             "input": prompt,
                             "chat_history": st.session_state.messages
