@@ -2,13 +2,12 @@ import streamlit as st
 import os
 import tempfile
 import pickle
-import google.generativeai as genai
+# REMOVED: import google.generativeai as genai (Not needed anymore)
 
 # Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
-# CHANGED: Using FastEmbed (Lightweight, Local, Free)
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings 
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
@@ -74,8 +73,6 @@ def get_llm(api_key, model_name):
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
 def get_embeddings():
-    # FAST & FREE LOCAL EMBEDDINGS
-    # No rate limits, no PyTorch dependency
     return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 @st.cache_resource
@@ -83,7 +80,6 @@ def process_documents(files):
     if not files and not os.path.exists(DB_PATH):
         return None, None
 
-    # We initialize embeddings here since they don't need a key anymore
     _embeddings = get_embeddings()
 
     # A. Process New Files
@@ -139,14 +135,12 @@ def build_advanced_retriever(vector_store, splits):
     return ensemble_retriever
 
 def create_agent(llm, retriever):
-    # Tool 1: The Super-Retriever
     retriever_tool = create_retriever_tool(
         retriever,
         "search_pdf_documents",
         "Search for information inside the uploaded PDF documents. Always use this first for specific questions."
     )
     
-    # Tool 2: Web Search
     search = DuckDuckGoSearchRun()
     from langchain_core.tools import Tool
     web_tool = Tool(
@@ -157,7 +151,6 @@ def create_agent(llm, retriever):
     
     tools = [retriever_tool, web_tool]
     
-    # Agent Prompt
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a helpful research assistant. You have access to PDF documents and the Internet. "
                    "Always prefer the PDF documents for specific questions. "
@@ -190,8 +183,6 @@ for message in st.session_state.messages:
 if google_api_key:
     try:
         llm = get_llm(google_api_key, selected_model)
-        
-        # Embeddings are initialized inside here now
         vector_store, splits = process_documents(uploaded_files)
         
         if vector_store and splits:
