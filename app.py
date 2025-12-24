@@ -87,8 +87,15 @@ def get_llm(api_key, model_name):
 
 def get_embeddings(hf_token):
     os.environ['HF_TOKEN'] = hf_token
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
+    # FORCE CPU: This prevents the "meta tensor" error
+    model_kwargs = {'device': 'cpu'}
+    encode_kwargs = {'normalize_embeddings': True}
+    
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs
+    )
 @st.cache_resource
 def process_documents(files, _embeddings):
     if not files and not os.path.exists(DB_PATH):
@@ -255,6 +262,7 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide API Keys to initialize the Agent.")
+
 
 
 
