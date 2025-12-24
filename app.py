@@ -1,8 +1,8 @@
+
 import streamlit as st
 import os
 import tempfile
 import pickle
-# REMOVED: import google.generativeai as genai (Not needed anymore)
 
 # Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
@@ -73,6 +73,7 @@ def get_llm(api_key, model_name):
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
 def get_embeddings():
+    # FAST & FREE LOCAL EMBEDDINGS
     return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 @st.cache_resource
@@ -135,12 +136,14 @@ def build_advanced_retriever(vector_store, splits):
     return ensemble_retriever
 
 def create_agent(llm, retriever):
+    # Tool 1: The Super-Retriever
     retriever_tool = create_retriever_tool(
         retriever,
         "search_pdf_documents",
         "Search for information inside the uploaded PDF documents. Always use this first for specific questions."
     )
     
+    # Tool 2: Web Search
     search = DuckDuckGoSearchRun()
     from langchain_core.tools import Tool
     web_tool = Tool(
@@ -151,6 +154,7 @@ def create_agent(llm, retriever):
     
     tools = [retriever_tool, web_tool]
     
+    # Agent Prompt
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a helpful research assistant. You have access to PDF documents and the Internet. "
                    "Always prefer the PDF documents for specific questions. "
@@ -183,6 +187,7 @@ for message in st.session_state.messages:
 if google_api_key:
     try:
         llm = get_llm(google_api_key, selected_model)
+        
         vector_store, splits = process_documents(uploaded_files)
         
         if vector_store and splits:
