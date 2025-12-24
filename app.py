@@ -12,6 +12,8 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
+
+# AGENT IMPORTS (Fixed)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools.retriever import create_retriever_tool
 
@@ -281,5 +283,6 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide API Keys to initialize the Agent.")
+
 
 
