@@ -1,3 +1,4 @@
+
 import streamlit as st
 import os
 import tempfile
@@ -13,6 +14,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # Fallback Engine
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -33,42 +35,46 @@ SPLITS_PATH = "splits.pkl"
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
-    Uses Hugging Face Inference API with Warmup, Micro-Batching and Retry Logic.
+    Implements Fault Tolerance: Tries HF API first, falls back to FastEmbed if down.
     """
     def __init__(self, hf_token: str):
-        if not hf_token:
-            st.error("❌ Hugging Face Token is missing! Embeddings cannot be generated.")
-            st.stop()
-            
-        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
-            api_key=hf_token,
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
+        self.hf_token = hf_token
+        self.embeddings = None
         self.vector_store = None
+        self.using_fallback = False
 
-    def _warmup_model(self):
+    def _init_embeddings(self):
         """
-        Sends a tiny request to wake up the cold model on HF servers.
+        Attempts to initialize HF API. If it fails, switches to Local FastEmbed.
         Resume Proof: "Ensure reliability in production"
         """
-        with st.status("🌡️ Warming up Inference API...", expanded=True) as status:
-            for i in range(3):
-                try:
-                    self.embeddings.embed_query("ping")
-                    status.update(label="✅ API Ready!", state="complete", expanded=False)
-                    return True
-                except Exception as e:
-                    status.write(f"Attempt {i+1}/3: Model is cold/sleeping. Retrying in 5s...")
-                    time.sleep(5)
-            st.error("❌ Could not wake up Hugging Face API. The service might be down.")
-            st.stop()
+        # Strategy 1: Serverless API (Preferred)
+        if self.hf_token:
+            try:
+                self.embeddings = HuggingFaceInferenceAPIEmbeddings(
+                    api_key=self.hf_token,
+                    model_name="sentence-transformers/all-MiniLM-L6-v2"
+                )
+                # Quick Ping Test
+                self.embeddings.embed_query("ping")
+                return
+            except Exception:
+                pass # Silently fail to fallback
+
+        # Strategy 2: Local CPU Fallback (Reliable)
+        self.using_fallback = True
+        self.embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
     def ingest(self, files: List[Any], chunk_size: int = 800, chunk_overlap: int = 100):
         """
-        Ingests files using robust chunking strategies, micro-batching, and retry logic.
+        Ingests files with automatic fallback handling.
         """
-        # 1. Warmup the API first
-        self._warmup_model()
+        # Initialize the best available embedding engine
+        with st.spinner("⚙️ Initializing Embedding Engine..."):
+            self._init_embeddings()
+
+        if self.using_fallback:
+            st.warning("⚠️ Hugging Face API is down/cold. Switched to Local CPU (FastEmbed) for stability.")
         
         all_docs = []
         for file in files:
@@ -84,60 +90,36 @@ class KnowledgeBase:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         splits = text_splitter.split_documents(all_docs)
         
-        # --- OPTIMIZATION LAYER: Micro-Batching ---
-        # Resume Proof: "Develop and maintain vector database infrastructures"
-        batch_size = 5  # Micro-batches to prevent Timeouts (Error 0)
-        total_batches = len(splits) // batch_size + 1
-        
-        progress_bar = st.progress(0, text="🏗️ Starting Ingestion...")
-        
-        for i in range(0, len(splits), batch_size):
-            batch = splits[i : i + batch_size]
-            if not batch: continue
+        # Ingestion
+        try:
+            with st.spinner("🏗️ Building Vector Database..."):
+                self.vector_store = FAISS.from_documents(splits, self.embeddings)
             
-            # Retry Logic per Batch
-            max_retries = 3
-            success = False
-            
-            for attempt in range(max_retries):
-                try:
-                    if self.vector_store is None:
-                        self.vector_store = FAISS.from_documents(batch, self.embeddings)
-                    else:
-                        self.vector_store.add_documents(batch)
-                    success = True
-                    break
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(3) # Wait longer between retries
-                    else:
-                        st.error(f"Failed to embed batch {i//batch_size + 1}: {e}")
-            
-            if not success:
-                st.error("❌ Critical Failure: API Timed out.")
-                st.stop()
-            
-            # Update Progress
-            current_progress = min((i // batch_size + 1) / total_batches, 1.0)
-            progress_bar.progress(current_progress, text=f"Embedding batch {i//batch_size + 1}/{total_batches}...")
-            time.sleep(0.2) 
-            
-        progress_bar.empty()
-        
-        # Persistence
-        if self.vector_store:
+            # Persistence
             self.vector_store.save_local(DB_PATH)
             with open(SPLITS_PATH, "wb") as f:
                 pickle.dump(splits, f)
+                
+            st.success("✅ Knowledge Base Successfully Built!")
+            return self.vector_store, splits
             
-        return self.vector_store, splits
+        except Exception as e:
+            st.error(f"Critical Ingestion Error: {e}")
+            st.stop()
 
     def load_existing(self):
+        # We need to re-init embeddings to load
+        if self.embeddings is None:
+             self._init_embeddings()
+             
         if os.path.exists(DB_PATH) and os.path.exists(SPLITS_PATH):
-            self.vector_store = FAISS.load_local(DB_PATH, self.embeddings, allow_dangerous_deserialization=True)
-            with open(SPLITS_PATH, "rb") as f:
-                splits = pickle.load(f)
-            return self.vector_store, splits
+            try:
+                self.vector_store = FAISS.load_local(DB_PATH, self.embeddings, allow_dangerous_deserialization=True)
+                with open(SPLITS_PATH, "rb") as f:
+                    splits = pickle.load(f)
+                return self.vector_store, splits
+            except:
+                return None, None
         return None, None
 
 # ==============================================================================
@@ -227,7 +209,7 @@ class AgentEngine:
 def main():
     st.title("🏗️ DocuChat: Enterprise RAG Architecture")
     st.markdown("""
-    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Multi-Provider Integration.*
+    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Fault-Tolerant Infrastructure.*
     """)
 
     # --- SIDEBAR ---
