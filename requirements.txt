@@ -10,4 +10,4 @@ tiktoken
 python-dotenv
 duckduckgo-search
 rank_bm25
-fastembed
+google-generativeai
