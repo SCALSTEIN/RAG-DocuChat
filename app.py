@@ -3,12 +3,13 @@ import streamlit as st
 import os
 import tempfile
 import pickle
+import time
+import google.generativeai as genai
 
 # Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings 
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,7 +27,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat Agent", page_icon="🕵️", layout="wide")
-st.title("🕵️ DocuChat Agent: Fast, Free & Autonomous")
+st.title("🕵️ DocuChat Agent: Safe Mode")
 
 # --- GLOBAL CONSTANTS ---
 DB_PATH = "vector_db"
@@ -72,16 +73,17 @@ def get_llm(api_key, model_name):
     os.environ["GOOGLE_API_KEY"] = api_key
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
-def get_embeddings():
-    # FAST & FREE LOCAL EMBEDDINGS
-    return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+def get_embeddings(api_key):
+    os.environ["GOOGLE_API_KEY"] = api_key
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 @st.cache_resource
-def process_documents(files):
+def process_documents(files, _api_key):
     if not files and not os.path.exists(DB_PATH):
         return None, None
-
-    _embeddings = get_embeddings()
+    
+    # Initialize embeddings
+    embeddings = get_embeddings(_api_key)
 
     # A. Process New Files
     if files:
@@ -95,10 +97,38 @@ def process_documents(files):
             all_docs.extend(loader.load())
             os.remove(tmp_path)
             
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        # Create smaller chunks to avoid hitting limits
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         splits = text_splitter.split_documents(all_docs)
         
-        vector_store = FAISS.from_documents(splits, _embeddings)
+        # --- SAFE MODE INGESTION ---
+        # We process in batches of 5 to avoid 429 Rate Limit
+        vector_store = None
+        batch_size = 5
+        total_batches = len(splits) // batch_size + 1
+        
+        progress_bar = st.progress(0, text="Embedding documents safely...")
+        
+        for i in range(0, len(splits), batch_size):
+            batch = splits[i : i + batch_size]
+            if not batch:
+                continue
+                
+            if vector_store is None:
+                vector_store = FAISS.from_documents(batch, embeddings)
+            else:
+                vector_store.add_documents(batch)
+            
+            # Update Progress
+            current_batch = (i // batch_size) + 1
+            progress = min(current_batch / total_batches, 1.0)
+            progress_bar.progress(progress, text=f"Processing batch {current_batch}/{total_batches}...")
+            
+            # WAIT to respect rate limit
+            time.sleep(2) 
+            
+        progress_bar.empty()
+        
         vector_store.save_local(DB_PATH)
         
         with open(SPLITS_PATH, "wb") as f:
@@ -109,7 +139,7 @@ def process_documents(files):
     # B. Load Existing
     elif os.path.exists(DB_PATH) and os.path.exists(SPLITS_PATH):
         try:
-            vector_store = FAISS.load_local(DB_PATH, _embeddings, allow_dangerous_deserialization=True)
+            vector_store = FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
             with open(SPLITS_PATH, "rb") as f:
                 splits = pickle.load(f)
             return vector_store, splits
@@ -188,7 +218,8 @@ if google_api_key:
     try:
         llm = get_llm(google_api_key, selected_model)
         
-        vector_store, splits = process_documents(uploaded_files)
+        # Pass API Key for Safe Mode Processing
+        vector_store, splits = process_documents(uploaded_files, google_api_key)
         
         if vector_store and splits:
             retriever = build_advanced_retriever(vector_store, splits)
