@@ -1,3 +1,4 @@
+
 streamlit
 langchain==0.1.20
 langchain-community==0.0.38
@@ -11,3 +12,4 @@ python-dotenv
 duckduckgo-search
 rank_bm25
 google-generativeai
+fastembed
