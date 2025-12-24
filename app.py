@@ -17,18 +17,16 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools.retriever import create_retriever_tool
 
-# Retrieval & Reranking Imports (FIXED)
-from langchain.retrievers import EnsembleRetriever, ContextualCompressionRetriever
+# Retrieval Imports (Stable Configuration: Hybrid Only)
+from langchain.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
-# --- THE FIX IS HERE ---
-from langchain_community.document_compressors import FlashrankRerank
 
 # Tools
 from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat Agent", page_icon="🕵️", layout="wide")
-st.title("🕵️ DocuChat Agent: Hybrid, Reranked & Autonomous")
+st.title("🕵️ DocuChat Agent: Hybrid & Autonomous")
 
 # --- GLOBAL CONSTANTS ---
 DB_PATH = "vector_db"
@@ -134,26 +132,20 @@ def process_documents(files, _embeddings):
 
 def build_advanced_retriever(vector_store, splits):
     # 1. Semantic Search (FAISS)
-    faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 4})
     
     # 2. Keyword Search (BM25)
     bm25_retriever = BM25Retriever.from_documents(splits)
-    bm25_retriever.k = 5
+    bm25_retriever.k = 4
     
     # 3. Hybrid Ensemble (50% Semantic / 50% Keyword)
+    # This combines the "Best of both worlds" without needing the problematic Flashrank
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
     )
     
-    # 4. Reranking (Flashrank)
-    compressor = FlashrankRerank()
-    compression_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor, 
-        base_retriever=ensemble_retriever
-    )
-    
-    return compression_retriever
+    return ensemble_retriever
 
 def create_agent(llm, retriever):
     # Tool 1: The Super-Retriever
@@ -263,7 +255,6 @@ if google_api_key and hf_token:
 
 else:
     st.warning("Please provide API Keys to initialize the Agent.")
-
 
 
 
