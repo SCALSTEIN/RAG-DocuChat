@@ -1,3 +1,4 @@
+
 import streamlit as st
 import os
 import tempfile
@@ -7,8 +8,7 @@ import google.generativeai as genai
 # Core LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.embeddings import HuggingFaceEmbeddings 
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings # CHANGED
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,7 +26,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="DocuChat Agent", page_icon="🕵️", layout="wide")
-st.title("🕵️ DocuChat Agent: Hybrid & Autonomous")
+st.title("🕵️ DocuChat Agent: Hybrid & Autonomous (Fast)")
 
 # --- GLOBAL CONSTANTS ---
 DB_PATH = "vector_db"
@@ -39,11 +39,10 @@ with st.sidebar:
     # 1. API Keys
     with st.expander("🔐 API Keys", expanded=True):
         google_api_key = st.text_input("Google API Key", type="password")
-        hf_token = st.text_input("Hugging Face Token", type="password")
+        # We NO LONGER need the Hugging Face Token!
     
-    # 2. Model Selector (FIXED: Hardcoded to prevent errors)
+    # 2. Model Selector
     st.markdown("### 🤖 Agent Brain")
-    # We manually list the supported models to avoid SDK crashes
     valid_models = [
         "models/gemini-1.5-flash",
         "models/gemini-1.5-pro",
@@ -74,16 +73,10 @@ def get_llm(api_key, model_name):
     os.environ["GOOGLE_API_KEY"] = api_key
     return ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
-def get_embeddings(hf_token):
-    os.environ['HF_TOKEN'] = hf_token
-    # FORCE CPU to prevent "meta tensor" errors
-    model_kwargs = {'device': 'cpu'}
-    encode_kwargs = {'normalize_embeddings': True}
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs=model_kwargs,
-        encode_kwargs=encode_kwargs
-    )
+def get_embeddings(api_key):
+    # CHANGED: Using Google's Embedding Model (Fast & Free)
+    os.environ["GOOGLE_API_KEY"] = api_key
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 @st.cache_resource
 def process_documents(files, _embeddings):
@@ -191,9 +184,10 @@ for message in st.session_state.messages:
     with st.chat_message(role):
         st.markdown(content)
 
-if google_api_key and hf_token:
+if google_api_key:
     try:
-        embeddings = get_embeddings(hf_token)
+        # CHANGED: Now using Google API for embeddings too
+        embeddings = get_embeddings(google_api_key)
         llm = get_llm(google_api_key, selected_model)
         
         vector_store, splits = process_documents(uploaded_files, embeddings)
@@ -218,7 +212,6 @@ if google_api_key and hf_token:
                 st.session_state.messages.append(AIMessage(content=output_text))
 
         else:
-            # Web-Only Fallback
             if not uploaded_files:
                 st.info("ℹ️ No PDF uploaded. Switching to Web-Only mode.")
                 search = DuckDuckGoSearchRun()
@@ -249,4 +242,4 @@ if google_api_key and hf_token:
         st.error(f"System Error: {e}")
 
 else:
-    st.warning("Please provide API Keys to initialize the Agent.")
+    st.warning("Please provide Google API Key to initialize the Agent.")
