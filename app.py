@@ -1,3 +1,14 @@
+import streamlit as st
+import os
+import tempfile
+import pickle
+import time
+# --- FIX: Added List and Any here ---
+from typing import List, Any, Optional 
+
+# --- PROOF OF SKILL: Production Libraries ---
+from langchain_community.document_loaders import PyPDFLoader
+
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
@@ -59,3 +70,4 @@ class KnowledgeBase:
             pickle.dump(splits, f)
             
         return self.vector_store, splits
+
