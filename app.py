@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import tempfile
@@ -14,7 +13,6 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # Fallback Engine
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
@@ -35,47 +33,23 @@ SPLITS_PATH = "splits.pkl"
 class KnowledgeBase:
     """
     Manages the ingestion, chunking, and storage of documents.
-    Implements Fault Tolerance: Tries HF API first, falls back to FastEmbed if down.
+    Uses Hugging Face Inference API with Robust Retry Logic.
     """
     def __init__(self, hf_token: str):
-        self.hf_token = hf_token
-        self.embeddings = None
+        if not hf_token:
+            st.error("❌ Hugging Face Token is missing! Embeddings cannot be generated.")
+            st.stop()
+            
+        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
+            api_key=hf_token,
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
         self.vector_store = None
-        self.using_fallback = False
-
-    def _init_embeddings(self):
-        """
-        Attempts to initialize HF API. If it fails, switches to Local FastEmbed.
-        Resume Proof: "Ensure reliability in production"
-        """
-        # Strategy 1: Serverless API (Preferred)
-        if self.hf_token:
-            try:
-                self.embeddings = HuggingFaceInferenceAPIEmbeddings(
-                    api_key=self.hf_token,
-                    model_name="sentence-transformers/all-MiniLM-L6-v2"
-                )
-                # Quick Ping Test
-                self.embeddings.embed_query("ping")
-                return
-            except Exception:
-                pass # Silently fail to fallback
-
-        # Strategy 2: Local CPU Fallback (Reliable)
-        self.using_fallback = True
-        self.embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
     def ingest(self, files: List[Any], chunk_size: int = 800, chunk_overlap: int = 100):
         """
-        Ingests files with automatic fallback handling.
+        Ingests files using robust chunking strategies and retry logic.
         """
-        # Initialize the best available embedding engine
-        with st.spinner("⚙️ Initializing Embedding Engine..."):
-            self._init_embeddings()
-
-        if self.using_fallback:
-            st.warning("⚠️ Hugging Face API is down/cold. Switched to Local CPU (FastEmbed) for stability.")
-        
         all_docs = []
         for file in files:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -90,36 +64,51 @@ class KnowledgeBase:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         splits = text_splitter.split_documents(all_docs)
         
-        # Ingestion
-        try:
-            with st.spinner("🏗️ Building Vector Database..."):
-                self.vector_store = FAISS.from_documents(splits, self.embeddings)
+        # --- RESILIENCY LAYER: Retry Logic ---
+        # Resume Proof: "Ensure reliability in production"
+        max_retries = 5
+        
+        with st.status("🏗️ Ingesting knowledge base...", expanded=True) as status:
+            # OPTIMIZATION: Micro-batching to prevent timeouts
+            batch_size = 10
+            total_batches = len(splits) // batch_size + 1
             
-            # Persistence
-            self.vector_store.save_local(DB_PATH)
-            with open(SPLITS_PATH, "wb") as f:
-                pickle.dump(splits, f)
+            for i in range(0, len(splits), batch_size):
+                batch = splits[i : i + batch_size]
+                if not batch: continue
                 
-            st.success("✅ Knowledge Base Successfully Built!")
-            return self.vector_store, splits
+                batch_success = False
+                for attempt in range(max_retries):
+                    try:
+                        status.write(f"Embedding batch {i//batch_size +1}/{total_batches} (Attempt {attempt+1})...")
+                        if self.vector_store is None:
+                            self.vector_store = FAISS.from_documents(batch, self.embeddings)
+                        else:
+                            self.vector_store.add_documents(batch)
+                        batch_success = True
+                        break # Success!
+                    except Exception as e:
+                        time.sleep(3) # Wait for API cooldown
+                
+                if not batch_success:
+                    st.error(f"❌ Failed to embed batch {i//batch_size + 1}. The HF API might be overloaded.")
+                    st.stop()
             
-        except Exception as e:
-            st.error(f"Critical Ingestion Error: {e}")
-            st.stop()
+            status.update(label="✅ Knowledge Base Built Successfully!", state="complete", expanded=False)
+        
+        # Persistence
+        self.vector_store.save_local(DB_PATH)
+        with open(SPLITS_PATH, "wb") as f:
+            pickle.dump(splits, f)
+            
+        return self.vector_store, splits
 
     def load_existing(self):
-        # We need to re-init embeddings to load
-        if self.embeddings is None:
-             self._init_embeddings()
-             
         if os.path.exists(DB_PATH) and os.path.exists(SPLITS_PATH):
-            try:
-                self.vector_store = FAISS.load_local(DB_PATH, self.embeddings, allow_dangerous_deserialization=True)
-                with open(SPLITS_PATH, "rb") as f:
-                    splits = pickle.load(f)
-                return self.vector_store, splits
-            except:
-                return None, None
+            self.vector_store = FAISS.load_local(DB_PATH, self.embeddings, allow_dangerous_deserialization=True)
+            with open(SPLITS_PATH, "rb") as f:
+                splits = pickle.load(f)
+            return self.vector_store, splits
         return None, None
 
 # ==============================================================================
@@ -209,7 +198,7 @@ class AgentEngine:
 def main():
     st.title("🏗️ DocuChat: Enterprise RAG Architecture")
     st.markdown("""
-    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Fault-Tolerant Infrastructure.*
+    *Demonstrating advanced RAG capabilities: Hybrid Search, Agentic Workflows, and Multi-Provider Integration.*
     """)
 
     # --- SIDEBAR ---
