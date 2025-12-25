@@ -37,6 +37,9 @@ class KnowledgeBase:
             st.error("❌ Missing Keys! Please provide Google, HF, and Pinecone keys.")
             st.stop()
             
+        # --- CRITICAL FIX: Set Env Var for LangChain ---
+        os.environ["PINECONE_API_KEY"] = pinecone_api_key
+            
         # 1. Initialize Embeddings (Hugging Face)
         self.embeddings = HuggingFaceInferenceAPIEmbeddings(
             api_key=hf_token,
