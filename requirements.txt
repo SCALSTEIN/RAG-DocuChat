@@ -1,3 +1,4 @@
+
 streamlit
 langchain==0.1.20
 langchain-community==0.0.38
@@ -12,3 +13,4 @@ python-dotenv
 duckduckgo-search
 rank_bm25
 numpy<2
+nest_asyncio
