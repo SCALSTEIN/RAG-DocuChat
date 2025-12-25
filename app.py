@@ -68,7 +68,6 @@ class KnowledgeBase:
         with st.status("🌲 Processing & Uploading...", expanded=True) as status:
             try:
                 namespace = "docuchat_demo"
-                # Batching is still good practice even with local embeddings
                 batch_size = 32
                 total_batches = len(splits) // batch_size + 1
                 
