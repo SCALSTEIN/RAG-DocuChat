@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import os
 import tempfile
@@ -70,6 +68,7 @@ class KnowledgeBase:
         with st.status("🌲 Processing & Uploading...", expanded=True) as status:
             try:
                 namespace = "docuchat_demo"
+                # Batching is still good practice even with local embeddings
                 batch_size = 32
                 total_batches = len(splits) // batch_size + 1
                 
@@ -122,6 +121,7 @@ class RAGPipeline:
 class AgentEngine:
     def __init__(self, api_key: str, model_name: str):
         os.environ["GOOGLE_API_KEY"] = api_key
+        # FIX: Removed 'models/' prefix which causes 404 errors in some regions/versions
         self.llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
 
     def create_agent(self, retriever):
@@ -171,7 +171,13 @@ def main():
             index_name = st.text_input("Index Name", value="docuchat")
         
         st.subheader("🧠 Model Config")
-        model_name = st.selectbox("LLM Model", ["models/gemini-1.5-flash", "models/gemini-1.5-pro"])
+        # FIX: Updated model list to remove 'models/' prefix
+        model_options = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+        selected_model = st.selectbox("LLM Model", model_options)
+        
+        # Fallback for manual entry
+        if st.checkbox("Use Custom Model Name"):
+            selected_model = st.text_input("Enter Model Name", "gemini-1.5-flash")
         
         st.subheader("📂 Ingestion Engine")
         uploaded_files = st.file_uploader("Data Source (PDF)", type="pdf", accept_multiple_files=True)
@@ -205,7 +211,7 @@ def main():
                 rag_pipeline = RAGPipeline(vector_store)
                 retriever = rag_pipeline.build_retriever()
                 
-                engine = AgentEngine(google_api_key, model_name)
+                engine = AgentEngine(google_api_key, selected_model)
                 agent_executor = engine.create_agent(retriever)
                 
                 # 4. Chat Interface
