@@ -1,8 +1,10 @@
+
+
 import streamlit as st
 import os
 import tempfile
 import time
-from typing import List, Any, Optional
+from typing import List, Any
 
 # --- CRITICAL: This MUST be the first Streamlit command ---
 st.set_page_config(page_title="DocuChat: Pinecone Enterprise", page_icon="🌲", layout="wide")
@@ -11,52 +13,44 @@ st.set_page_config(page_title="DocuChat: Pinecone Enterprise", page_icon="🌲",
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-# RESUME PROOF: "Develop and maintain vector database infrastructures (Pinecone)"
+# RESUME PROOF: "Hybrid Compute" (Local Embedding + Cloud Storage)
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings 
 from langchain_pinecone import PineconeVectorStore 
 from pinecone import Pinecone
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools.retriever import create_retriever_tool
-from langchain.retrievers import EnsembleRetriever
-from langchain_community.retrievers import BM25Retriever
 from langchain_community.tools import DuckDuckGoSearchRun
 
 # ==============================================================================
-# 🏗️ ARCHITECTURE LAYER: Knowledge Base (Pinecone Edition)
-# Resume Proof: "Develop and maintain vector database infrastructures (Pinecone)"
+# 🏗️ ARCHITECTURE LAYER: Knowledge Base (Hybrid Pinecone)
+# Resume Proof: "Develop and maintain vector database infrastructures"
 # ==============================================================================
 class KnowledgeBase:
     """
-    Manages the ingestion, chunking, and Cloud Storage (Pinecone).
-    Uses Hugging Face for Embeddings + Pinecone for Storage.
+    Manages ingestion. 
+    Architecture: Local Compute (Embeddings) -> Cloud Storage (Pinecone).
     """
-    def __init__(self, hf_token: str, pinecone_api_key: str, index_name: str):
-        if not hf_token or not pinecone_api_key or not index_name:
-            st.error("❌ Missing Keys! Please provide Google, HF, and Pinecone keys.")
+    def __init__(self, pinecone_api_key: str, index_name: str):
+        if not pinecone_api_key or not index_name:
+            st.error("❌ Missing Pinecone API Key or Index Name.")
             st.stop()
             
         # --- CRITICAL FIX: Set Env Var for LangChain ---
         os.environ["PINECONE_API_KEY"] = pinecone_api_key
             
-        # 1. Initialize Embeddings (Hugging Face)
-        self.embeddings = HuggingFaceInferenceAPIEmbeddings(
-            api_key=hf_token,
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
+        # 1. Initialize Embeddings (Local FastEmbed - No API Rate Limits)
+        # Uses BAAI/bge-small-en-v1.5 (Default) -> 384 Dimensions
+        self.embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
         
         # 2. Initialize Pinecone Client
-        self.pinecone_api_key = pinecone_api_key
         self.index_name = index_name
-        
-        # Resume Proof: "Develop and maintain vector database infrastructures"
-        self.pc = Pinecone(api_key=pinecone_api_key)
         self.vector_store = None
 
     def ingest(self, files: List[Any]):
         """
-        Ingests files -> Embeds (HF) -> Upserts to Cloud (Pinecone).
+        Ingests files -> Embeds Locally -> Upserts to Cloud.
         """
         all_docs = []
         for file in files:
@@ -68,26 +62,22 @@ class KnowledgeBase:
             all_docs.extend(loader.load())
             os.remove(tmp_path)
             
-        # Resume Proof: "Prompt optimization / Reranking strategies" (Chunking)
+        # Resume Proof: "Chunking strategies"
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         splits = text_splitter.split_documents(all_docs)
         
         # --- CLOUD UPLOAD LAYER ---
-        with st.status("🌲 Uploading to Pinecone Cloud...", expanded=True) as status:
+        with st.status("🌲 Processing & Uploading...", expanded=True) as status:
             try:
-                # We use specific namespace to keep demo clean
                 namespace = "docuchat_demo"
-                
-                # Resume Proof: "Large-scale embedding storage" (Batch Processing)
                 batch_size = 32
                 total_batches = len(splits) // batch_size + 1
                 
                 for i in range(0, len(splits), batch_size):
                     batch = splits[i : i + batch_size]
-                    status.write(f"Upserting batch {i//batch_size + 1}/{total_batches}...")
+                    status.write(f"Processing batch {i//batch_size + 1}/{total_batches} (Local Embedding -> Pinecone)...")
                     
                     if self.vector_store is None:
-                        # First batch creates the connection
                         self.vector_store = PineconeVectorStore.from_documents(
                             documents=batch,
                             embedding=self.embeddings,
@@ -95,20 +85,17 @@ class KnowledgeBase:
                             namespace=namespace
                         )
                     else:
-                        # Subsequent batches add to it
                         self.vector_store.add_documents(batch)
-                    
-                    time.sleep(1) # Rate limit protection
                 
                 status.update(label="✅ Upload Complete!", state="complete", expanded=False)
                 return self.vector_store, splits
                 
             except Exception as e:
                 st.error(f"Pinecone Error: {e}")
+                st.info("Tip: Ensure your Pinecone Index dimensions are set to 384.")
                 st.stop()
 
     def connect_existing(self):
-        """Connects to an existing Pinecone Index without re-uploading."""
         try:
             self.vector_store = PineconeVectorStore.from_existing_index(
                 index_name=self.index_name,
@@ -121,20 +108,13 @@ class KnowledgeBase:
 
 # ==============================================================================
 # 🧠 INTELLIGENCE LAYER: RAG Pipeline
-# Resume Proof: "Architect and implement RAG pipelines, including hybrid search..."
 # ==============================================================================
 class RAGPipeline:
     def __init__(self, vector_store):
         self.vector_store = vector_store
 
     def build_retriever(self, k: int = 4):
-        # 1. Cloud Dense Retriever (Pinecone)
-        pinecone_retriever = self.vector_store.as_retriever(search_kwargs={"k": k})
-        
-        # NOTE: For true Hybrid in Pinecone, we'd need 'pinecone-text'. 
-        # For this demo, we rely on the high-quality Dense Retrieval of Pinecone
-        # combined with the Agent's reasoning capabilities.
-        return pinecone_retriever
+        return self.vector_store.as_retriever(search_kwargs={"k": k})
 
 # ==============================================================================
 # 🤖 AGENT LAYER: Orchestration
@@ -162,13 +142,7 @@ class AgentEngine:
         tools = [retriever_tool, web_tool]
         
         system_prompt = """You are an expert Autonomous Research Agent. 
-        Your goal is to answer the user's question using the most reliable source.
-        
-        STRATEGY:
-        1. If the question implies specific internal documents, use 'search_pdf_documents'.
-        2. If the question implies real-time data, use 'search_internet'.
-        3. If complex, you may use BOTH tools and synthesize the answer.
-        
+        Answer the user's question using the most reliable source.
         Always cite your sources."""
         
         prompt = ChatPromptTemplate.from_messages([
@@ -186,17 +160,13 @@ class AgentEngine:
 # ==============================================================================
 def main():
     st.title("🌲 DocuChat: Pinecone Enterprise Architecture")
-    st.markdown("""
-    *Demonstrating Cloud-Native RAG capabilities using Pinecone Vector Database.*
-    """)
-
+    
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Configuration")
         
         with st.expander("🔐 Cloud Credentials", expanded=True):
             google_api_key = st.text_input("Google API Key", type="password")
-            hf_token = st.text_input("Hugging Face Token", type="password")
             pinecone_key = st.text_input("Pinecone API Key", type="password")
             index_name = st.text_input("Index Name", value="docuchat")
         
@@ -218,17 +188,16 @@ def main():
         st.chat_message(msg.role).markdown(msg.content)
 
     # --- MAIN EXECUTION ---
-    if google_api_key and hf_token and pinecone_key:
+    if google_api_key and pinecone_key:
         try:
             # 1. Init Layers
-            kb = KnowledgeBase(hf_token, pinecone_key, index_name)
+            kb = KnowledgeBase(pinecone_key, index_name)
             
             # 2. Ingest or Connect
             vector_store = None
             if uploaded_files:
                 vector_store, _ = kb.ingest(uploaded_files)
             else:
-                # Try connecting to existing index if no new files
                 vector_store = kb.connect_existing()
             
             # 3. Build Pipeline
@@ -261,7 +230,7 @@ def main():
         except Exception as e:
             st.error(f"System Error: {e}")
     else:
-        st.warning("Please provide ALL API Keys (Google, HF, Pinecone) to initialize.")
+        st.warning("Please provide Google and Pinecone API Keys.")
 
 if __name__ == "__main__":
     main()
