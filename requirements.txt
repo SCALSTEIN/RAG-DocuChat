@@ -4,7 +4,8 @@ langchain-community==0.0.38
 langchain-core==0.1.52
 langchain-google-genai==1.0.3
 langchain-text-splitters
-faiss-cpu
+langchain-pinecone
+pinecone-client
 pypdf
 tiktoken
 python-dotenv
