@@ -2,10 +2,16 @@ import streamlit as st
 import os
 import tempfile
 import time
+import asyncio # Fix for asyncio errors
 from typing import List, Any
 
 # --- CRITICAL: This MUST be the first Streamlit command ---
 st.set_page_config(page_title="DocuChat: Pinecone Enterprise", page_icon="🌲", layout="wide")
+
+# --- CONCURRENCY FIX: Patch Asyncio Loop ---
+# This solves "RuntimeError: There is no current event loop..."
+import nest_asyncio
+nest_asyncio.apply()
 
 # --- PROOF OF SKILL: Production Libraries ---
 from langchain_community.document_loaders import PyPDFLoader
@@ -40,7 +46,11 @@ class KnowledgeBase:
             
         # 1. Initialize Embeddings (Local FastEmbed - No API Rate Limits)
         # Uses BAAI/bge-small-en-v1.5 (Default) -> 384 Dimensions
-        self.embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        try:
+            self.embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        except Exception as e:
+            st.error(f"Embedding Init Error: {e}")
+            st.stop()
         
         # 2. Initialize Pinecone Client
         self.index_name = index_name
@@ -68,6 +78,7 @@ class KnowledgeBase:
         with st.status("🌲 Processing & Uploading...", expanded=True) as status:
             try:
                 namespace = "docuchat_demo"
+                # Batching is still good practice even with local embeddings
                 batch_size = 32
                 total_batches = len(splits) // batch_size + 1
                 
@@ -177,65 +188,3 @@ def main():
         # Fallback for manual entry
         if st.checkbox("Use Custom Model Name"):
             selected_model = st.text_input("Enter Model Name", "gemini-1.5-flash")
-        
-        st.subheader("📂 Ingestion Engine")
-        uploaded_files = st.file_uploader("Data Source (PDF)", type="pdf", accept_multiple_files=True)
-        
-        if st.button("🔄 Clear Chat"):
-            st.session_state.messages = []
-            st.rerun()
-
-    # --- CHAT HISTORY ---
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for msg in st.session_state.messages:
-        st.chat_message(msg.role).markdown(msg.content)
-
-    # --- MAIN EXECUTION ---
-    if google_api_key and pinecone_key:
-        try:
-            # 1. Init Layers
-            kb = KnowledgeBase(pinecone_key, index_name)
-            
-            # 2. Ingest or Connect
-            vector_store = None
-            if uploaded_files:
-                vector_store, _ = kb.ingest(uploaded_files)
-            else:
-                vector_store = kb.connect_existing()
-            
-            # 3. Build Pipeline
-            if vector_store:
-                rag_pipeline = RAGPipeline(vector_store)
-                retriever = rag_pipeline.build_retriever()
-                
-                engine = AgentEngine(google_api_key, selected_model)
-                agent_executor = engine.create_agent(retriever)
-                
-                # 4. Chat Interface
-                if prompt := st.chat_input("Ask about the docs or the web..."):
-                    st.chat_message("user").markdown(prompt)
-                    st.session_state.messages.append(HumanMessage(content=prompt))
-                    
-                    with st.chat_message("assistant"):
-                        with st.spinner("🌲 Pinecone is retrieving..."):
-                            response = agent_executor.invoke({
-                                "input": prompt,
-                                "chat_history": st.session_state.messages
-                            })
-                            output = response["output"]
-                            st.markdown(output)
-                                
-                    st.session_state.messages.append(AIMessage(content=output))
-            else:
-                 if not uploaded_files:
-                    st.info("👆 Please upload a PDF to upload vectors to Pinecone.")
-
-        except Exception as e:
-            st.error(f"System Error: {e}")
-    else:
-        st.warning("Please provide Google and Pinecone API Keys.")
-
-if __name__ == "__main__":
-    main()
